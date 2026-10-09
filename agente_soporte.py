@@ -19,8 +19,8 @@ NOMBRE_HOJA = "Respuestas de Quejas (Base de Datos)"
 # Se puede configurar directamente aquí o mediante la variable de entorno GEMINI_API_KEY
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "TU_API_KEY_AQUI")
 
-# Cada cuántos minutos el agente revisará si hay nuevas quejas
-INTERVALO_MINUTOS = 15
+# Cada cuántos minutos el agente revisará si hay nuevas quejas (configurado a 1 minuto)
+INTERVALO_MINUTOS = 1
 
 # Índices numéricos de las columnas en Google Sheets (1-indexed)
 COL_CLASIFICACION = 4  # Columna D: Clasificación IA
@@ -187,10 +187,16 @@ def ejecutar_agente():
             continue
 
         nombre_cliente = fila[1] if len(fila) > 1 and fila[1] else "Cliente Anónimo"
-        comentario = fila[2] if len(fila) > 2 else ""
+        
+        # Extraer comentario de la columna C (índice 2) o columna B (índice 1) si solo hay una pregunta
+        comentario = ""
+        if len(fila) > 2 and fila[2].strip():
+            comentario = fila[2].strip()
+        elif len(fila) > 1 and fila[1].strip() and len(fila[1].strip()) > 15:
+            comentario = fila[1].strip()
 
-        if not comentario.strip():
-            print(f"[OMITIDO] Fila {idx_fila} - Cliente: '{nombre_cliente}' (Comentario vacío)")
+        if not comentario:
+            print(f"[OMITIDO] Fila {idx_fila} - Cliente: '{nombre_cliente}' (Sin comentario detectable)")
             continue
 
         print(f"\n[PROCESANDO NUEVA QUEJA] Fila {idx_fila} - Cliente: {nombre_cliente}")
@@ -224,7 +230,7 @@ def ejecutar_agente():
         # Pausa ligera entre filas para respetar los límites de la API gratuita
         time.sleep(2)
 
-    print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Ciclo completado. Filas procesadas: {nuevas_filas_procesadas}")
+    print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Ciclo completado. Filas procesadas en este turno: {nuevas_filas_procesadas}")
     print("--------------------------------------------------")
 
 
@@ -263,13 +269,13 @@ if __name__ == "__main__":
 
     # 5. Programar ejecuciones automáticas cada INTERVALO_MINUTOS
     schedule.every(INTERVALO_MINUTOS).minutes.do(ejecutar_agente)
-    print(f"\n[AGENTE ACTIVO] Revisando la hoja de cálculo cada {INTERVALO_MINUTOS} minutos.")
+    print(f"\n[AGENTE ACTIVO] Revisando la hoja de cálculo CADA 1 MINUTO.")
     print("Presiona Ctrl+C para detener el agente.\n")
 
-    # 6. Mantener el script en ejecución continua (bucle infinito cada 30 segundos)
+    # 6. Mantener el script en ejecución continua (comprueba cada 5 segundos)
     try:
         while True:
             schedule.run_pending()
-            time.sleep(30)
+            time.sleep(5)
     except KeyboardInterrupt:
         print("\n[AGENTE DETENIDO] El usuario ha detenido la ejecución.")
