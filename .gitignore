@@ -1,0 +1,12 @@
+# Archivos de credenciales y claves privadas (Ignorados por seguridad)
+client_secrets.json
+client_secrets.json.json
+authorized_user.json
+token.json
+
+# Cache de Python y entornos virtuales
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
