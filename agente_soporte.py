@@ -1,25 +1,37 @@
 import json
 import os
+import sys
 import time
 import schedule
 import gspread
+from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 
 # ==========================================
-# SECCIÓN DE CONFIGURACIÓN (Paso 4.3)
+# SECCIÓN DE CONFIGURACIÓN (Fase 1)
 # ==========================================
-# Nombre del archivo OAuth descargado en la Fase 2
+# Cargar variables de entorno desde el archivo .env si existe
+load_dotenv()
+
+# Nombre del archivo OAuth descargado en la Fase 2 (Práctica 1)
 ARCHIVO_CREDENCIALES = "client_secrets.json"
 
-# Nombre exacto de la hoja de cálculo creada en la Fase 1
-NOMBRE_HOJA = "Respuestas de Quejas (Base de Datos)"
+# Scopes requeridos para Google Sheets y Drive
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
-# API Key de Gemini obtenida en la Fase 3
-# Se puede configurar directamente aquí o mediante la variable de entorno GEMINI_API_KEY
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "TU_API_KEY_AQUI")
+# Nombre de la hoja de cálculo creada en la Fase 1
+NOMBRE_HOJA = "Respuestas de quejas (base de datos)."
 
-# Cada cuántos minutos el agente revisará si hay nuevas quejas (configurado a 1 minuto)
+# API Key de Gemini obtenida de las variables de entorno
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "TU_API_KEY_AQUI")
+
+# Cada cuántos minutos el agente revisará si hay nuevas quejas (para modo bucle local)
 INTERVALO_MINUTOS = 1
 
 # Índices numéricos de las columnas en Google Sheets (1-indexed)
@@ -32,45 +44,92 @@ client = None
 
 
 # ==========================================
-# FUNCIÓN: Conectar con Google Sheets (Paso 4.4)
+# FUNCIÓN: Conectar con Google Sheets (Paso 1.2)
 # ==========================================
 def conectar_sheets():
     """
-    Autentica el script con Google usando OAuth 2.0 a través de gspread,
-    abre la hoja de cálculo por su nombre y retorna la primera pestaña (sheet1).
+    Autentica con Google Sheets.
+    Si existe la variable de entorno GOOGLE_TOKEN_JSON (ej. en GitHub Actions),
+    se autentica sin navegador usando el token guardado.
+    Si no existe la variable, usa autenticación OAuth con navegador (modo local).
     """
     try:
-        # Autenticación OAuth 2.0 utilizando el archivo client_secrets.json
-        gc = gspread.oauth(credentials_filename=ARCHIVO_CREDENCIALES)
-        
-        # 1. Intentar abrir por nombre exacto
-        try:
-            sh = gc.open(NOMBRE_HOJA)
-            return sh.sheet1
-        except Exception:
-            pass
+        google_token_json = os.getenv("GOOGLE_TOKEN_JSON")
 
-        # 2. Si falla por nombre exacto, buscar hojas en Google Drive
-        todas_las_hojas = gc.openall()
-        if not todas_las_hojas:
-            print("[ERROR] No se encontró ninguna hoja de cálculo en tu cuenta de Google Drive.")
-            print("Asegúrate de haber creado la hoja desde Google Forms en tu cuenta parm15022012@gmail.com.")
+        if google_token_json:
+            print("[INFO] Autenticando mediante GOOGLE_TOKEN_JSON (Modo sin navegador / Nube)...")
+            token_data = json.loads(google_token_json)
+            creds = Credentials.from_authorized_user_info(token_data, scopes=SCOPES)
+            creds.refresh(Request())
+            gc = gspread.authorize(creds)
+
+            # Intentar abrir la hoja por nombre exacto o variantes
+            try:
+                sh = gc.open(NOMBRE_HOJA)
+                return sh.sheet1
+            except Exception:
+                pass
+
+            try:
+                sh = gc.open("Respuestas de Quejas (Base de Datos)")
+                return sh.sheet1
+            except Exception:
+                pass
+
+            # Si falla el nombre exacto, buscar hojas en Google Drive
+            todas_las_hojas = gc.openall()
+            for hoja in todas_las_hojas:
+                titulo_lower = hoja.title.lower()
+                if "quejas" in titulo_lower or "respuestas" in titulo_lower:
+                    print(f"[INFO] Conectado a la hoja encontrada: '{hoja.title}'")
+                    return hoja.sheet1
+
+            if todas_las_hojas:
+                print(f"[INFO] Se usará la primera hoja disponible: '{todas_las_hojas[0].title}'")
+                return todas_las_hojas[0].sheet1
+
+            print("[ERROR] No se encontró ninguna hoja de cálculo disponible.")
             return None
 
-        # Intentar coincidencia sin importar mayúsculas/minúsculas o palabras clave
-        nombre_buscado_lower = NOMBRE_HOJA.lower()
-        for hoja in todas_las_hojas:
-            titulo = hoja.title
-            titulo_lower = titulo.lower()
-            if titulo_lower == nombre_buscado_lower or "quejas" in titulo_lower or "respuestas" in titulo_lower:
-                print(f"[INFO] Conectado a la hoja encontrada: '{titulo}'")
-                return hoja.sheet1
+        else:
+            # Modo local: Autenticación OAuth 2.0 mediante navegador y client_secrets.json
+            print("[INFO] Autenticando localmente con client_secrets.json (OAuth)...")
+            gc = gspread.oauth(credentials_filename=ARCHIVO_CREDENCIALES)
 
-        # Si no coincide ninguna palabra clave, usar la primera hoja encontrada y avisar
-        hoja_encontrada = todas_las_hojas[0]
-        print(f"[INFO] No se encontró la hoja con el nombre exacto '{NOMBRE_HOJA}'.")
-        print(f"[INFO] Se usará la hoja disponible: '{hoja_encontrada.title}'")
-        return hoja_encontrada.sheet1
+            # 1. Intentar abrir por nombre exacto
+            try:
+                sh = gc.open(NOMBRE_HOJA)
+                return sh.sheet1
+            except Exception:
+                pass
+
+            try:
+                sh = gc.open("Respuestas de Quejas (Base de Datos)")
+                return sh.sheet1
+            except Exception:
+                pass
+
+            # 2. Si falla por nombre exacto, buscar hojas en Google Drive
+            todas_las_hojas = gc.openall()
+            if not todas_las_hojas:
+                print("[ERROR] No se encontró ninguna hoja de cálculo en tu cuenta de Google Drive.")
+                return None
+
+            nombre_buscado_lower = NOMBRE_HOJA.lower()
+            for hoja in todas_las_hojas:
+                titulo = hoja.title
+                titulo_lower = titulo.lower()
+                if (titulo_lower == nombre_buscado_lower or
+                    "quejas" in titulo_lower or
+                    "respuestas" in titulo_lower):
+                    print(f"[INFO] Conectado a la hoja encontrada: '{titulo}'")
+                    return hoja.sheet1
+
+            # Si no coincide ninguna palabra clave, usar la primera hoja encontrada y avisar
+            hoja_encontrada = todas_las_hojas[0]
+            print(f"[INFO] No se encontró la hoja con el nombre exacto '{NOMBRE_HOJA}'.")
+            print(f"[INFO] Se usará la hoja disponible: '{hoja_encontrada.title}'")
+            return hoja_encontrada.sheet1
 
     except Exception as e:
         print(f"[ERROR] No se pudo conectar con Google Sheets: {e}")
@@ -144,7 +203,7 @@ def analizar_con_gemini(comentario):
 
 
 # ==========================================
-# FUNCIÓN: Agente Principal (Paso 4.6)
+# FUNCIÓN: Agente Principal (Paso 1.3)
 # ==========================================
 def ejecutar_agente():
     """
@@ -154,26 +213,26 @@ def ejecutar_agente():
     3. Filtrar las filas cuya columna F esté vacía (no contenga 'SI').
     4. Enviar el comentario de cada fila a analizar_con_gemini().
     5. Escribir clasificación en col D, sentimiento en col E, y 'SI' en col F.
-    6. Manejo de errores para continuar con la siguiente fila si algo falla.
+    6. Retorna True si completó el ciclo con éxito, False si hubo error de conexión.
     """
     print("\n--------------------------------------------------")
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Iniciando ciclo del agente...")
-    
+
     hoja = conectar_sheets()
     if not hoja:
         print("[ERROR] Imposible continuar sin conexión a Google Sheets.")
-        return
+        return False
 
     try:
         filas = hoja.get_all_values()
     except Exception as e:
         print(f"[ERROR] Error al leer los datos de la hoja: {e}")
-        return
+        return False
 
     # Verificar que existan datos más allá de los encabezados (fila 1)
     if len(filas) <= 1:
         print("[INFO] La hoja no contiene registros de respuestas por analizar.")
-        return
+        return True
 
     nuevas_filas_procesadas = 0
 
@@ -187,8 +246,8 @@ def ejecutar_agente():
             continue
 
         nombre_cliente = fila[1] if len(fila) > 1 and fila[1] else "Cliente Anónimo"
-        
-        # Extraer comentario de la columna C (índice 2) o columna B (índice 1) si solo hay una pregunta
+
+        # Extraer comentario de la columna C (índice 2) o columna B (índice 1)
         comentario = ""
         if len(fila) > 2 and fila[2].strip():
             comentario = fila[2].strip()
@@ -232,10 +291,11 @@ def ejecutar_agente():
 
     print(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] Ciclo completado. Filas procesadas en este turno: {nuevas_filas_procesadas}")
     print("--------------------------------------------------")
+    return True
 
 
 # ==========================================
-# PUNTO DE ENTRADA DEL SCRIPT (Paso 4.7)
+# PUNTO DE ENTRADA DEL SCRIPT (Paso 1.3 y 1.4)
 # ==========================================
 if __name__ == "__main__":
     print("==================================================")
@@ -245,16 +305,17 @@ if __name__ == "__main__":
     # 1. Validar la API Key
     if not GEMINI_API_KEY or GEMINI_API_KEY == "TU_API_KEY_AQUI":
         print("\n[ERROR CRÍTICO] GEMINI_API_KEY no configurada.")
-        print("Por favor, abre 'agente_soporte.py' y asigna tu API Key en GEMINI_API_KEY,")
-        print("o establece la variable de entorno 'GEMINI_API_KEY'.")
-        exit(1)
+        print("Por favor, configura la variable GEMINI_API_KEY en tu archivo .env")
+        print("o como variable de entorno del sistema.")
+        sys.exit(1)
 
-    # 2. Validar el archivo de credenciales de Google
-    if not os.path.exists(ARCHIVO_CREDENCIALES):
-        print(f"\n[ERROR CRÍTICO] Archivo de credenciales '{ARCHIVO_CREDENCIALES}' no encontrado.")
-        print("Asegúrate de copiar el archivo JSON de OAuth 2.0 descargado de Google Cloud Console")
-        print(f"a esta misma carpeta y renombrarlo exactamente a '{ARCHIVO_CREDENCIALES}'.")
-        exit(1)
+    # 2. Validar el archivo de credenciales de Google (solo si no existe GOOGLE_TOKEN_JSON)
+    if not os.getenv("GOOGLE_TOKEN_JSON"):
+        if not os.path.exists(ARCHIVO_CREDENCIALES):
+            print(f"\n[ERROR CRÍTICO] Archivo de credenciales '{ARCHIVO_CREDENCIALES}' no encontrado.")
+            print("Asegúrate de tener client_secrets.json en esta carpeta para ejecución local")
+            print("o de definir la variable GOOGLE_TOKEN_JSON para ejecución en la nube.")
+            sys.exit(1)
 
     # 3. Inicializar el cliente de Gemini AI
     try:
@@ -262,17 +323,21 @@ if __name__ == "__main__":
         client = genai.Client(api_key=GEMINI_API_KEY)
     except Exception as e:
         print(f"[ERROR CRÍTICO] No se pudo inicializar el cliente de Gemini: {e}")
-        exit(1)
+        sys.exit(1)
 
-    # 4. Ejecutar inmediatamente al arrancar
+    # 4. Modo 'Una Vez' para GitHub Actions (--una-vez)
+    if "--una-vez" in sys.argv:
+        print("[MODO] Ejecutando en modo una sola vez (--una-vez)...")
+        exito = ejecutar_agente()
+        sys.exit(0 if exito else 1)
+
+    # 5. Modo continuo para ejecución local con bucle schedule
     ejecutar_agente()
 
-    # 5. Programar ejecuciones automáticas cada INTERVALO_MINUTOS
     schedule.every(INTERVALO_MINUTOS).minutes.do(ejecutar_agente)
-    print(f"\n[AGENTE ACTIVO] Revisando la hoja de cálculo CADA 1 MINUTO.")
+    print(f"\n[AGENTE ACTIVO] Revisando la hoja de cálculo CADA {INTERVALO_MINUTOS} MINUTO(S).")
     print("Presiona Ctrl+C para detener el agente.\n")
 
-    # 6. Mantener el script en ejecución continua (comprueba cada 5 segundos)
     try:
         while True:
             schedule.run_pending()
